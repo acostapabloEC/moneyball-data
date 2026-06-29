@@ -76,18 +76,53 @@ def add_date_row(arr, date_label, rep_values):
         row[rep] = val
     return arr
 
-def add_month_row(arr, month_num, rep_values):
-    """Add or update a specific tenure month row."""
-    row = next((r for r in arr if r["month"] == month_num), None)
-    if row is None:
-        template = {k: None for k in arr[-1].keys()} if arr else {}
-        row = dict(template)
-        row["month"] = month_num
-        arr.append(arr)  # placeholder — fill below
-        arr[-1] = row
-    for rep, val in rep_values.items():
-        row[rep] = val
-    return arr
+def rebuild_month_arrays(data, universe):
+    """Regenerate the MONTH (tenure) arrays from the authoritative DATE (calendar)
+    arrays. For each rep, their contiguous calendar months (first..last non-null
+    RPR) are reindexed as tenure months 0..N. All three metrics (RPR/PC/CCOST)
+    share the same per-rep spine, so they stay perfectly consistent and never
+    develop the index-skip / shifted-start / extra-point artifacts that the old
+    incremental approach accumulated. Real gaps (leave / inactive months) are
+    preserved as null, exactly as they appear in the calendar arrays.
+    """
+    d_rpr = data[f"{universe}_DATE_RPR"]
+    d_pc  = data[f"{universe}_DATE_PC"]
+    d_cc  = data[f"{universe}_DATE_CCOST"]
+
+    # preserve first-seen rep order across the date rows
+    reps, seen = [], set()
+    for row in d_rpr:
+        for k in row:
+            if k != "date" and k not in seen:
+                seen.add(k); reps.append(k)
+
+    # per-rep spine = [first non-null RPR row .. last non-null RPR row]
+    spine, max_t = {}, -1
+    for rep in reps:
+        first = last = -1
+        for i, row in enumerate(d_rpr):
+            if row.get(rep) is not None:
+                if first < 0:
+                    first = i
+                last = i
+        if first < 0:
+            continue
+        spine[rep] = (first, last)
+        max_t = max(max_t, last - first)
+
+    def build(date_arr):
+        rows = []
+        for k in range(max_t + 1):
+            row = {"month": k}
+            for rep in reps:
+                sp = spine.get(rep)
+                row[rep] = date_arr[sp[0] + k].get(rep) if (sp and k <= sp[1] - sp[0]) else None
+            rows.append(row)
+        return rows
+
+    data[f"{universe}_MONTH_RPR"]   = build(d_rpr)
+    data[f"{universe}_MONTH_PC"]    = build(d_pc)
+    data[f"{universe}_MONTH_CCOST"] = build(d_cc)
 
 # ── Read Excel ───────────────────────────────────────────────────────────────
 def read_excel(path):
@@ -181,11 +216,8 @@ def update(excel_path):
         leave_conf  = LEAVE_CONFIG.get(universe, {})
 
         new_rpr_date  = {}
-        new_rpr_month = {}
         new_cost_date  = {}
-        new_cost_month = {}
         new_pc_date   = {}
-        new_pc_month  = {}
 
         processed_reps = set()
 
@@ -214,17 +246,8 @@ def update(excel_path):
             new_cost_date[rep] = cum_cost
             new_pc_date[rep]   = pc_ratio
 
-            # Month arrays: find last tenure month and advance
-            last_m = get_last_month(rpr_month, rep)
-            next_m = last_m + 1
-            prev_rpr_m  = get_last_val(rpr_month, rep) or 0.0
-            prev_cost_m = get_last_val(cost_month, rep) or 0.0
-            cum_rpr_m  = r2(prev_rpr_m + monthly_rpr)
-            cum_cost_m = r2(prev_cost_m - monthly_cost)
-            pc_ratio_m = r4(cum_rpr_m / abs(cum_cost_m)) if cum_cost_m != 0 else None
-            new_rpr_month[rep]  = (next_m, cum_rpr_m)
-            new_cost_month[rep] = (next_m, cum_cost_m)
-            new_pc_month[rep]   = (next_m, pc_ratio_m)
+            # (Month/tenure arrays are regenerated from the date arrays below,
+            #  after all date rows are written — see rebuild_month_arrays.)
 
             # Auto-add new reps
             if rep not in reps_list:
@@ -251,14 +274,12 @@ def update(excel_path):
                 # Month arrays: leave period doesn't advance tenure month
                 print(f"  ~ {rep} on leave — held flat at {prev_rpr}")
 
-        # Ensure new rep columns exist in all rows
+        # Ensure new rep columns exist in all date rows
+        # (month arrays are rebuilt fresh below, so they don't need this)
         all_new_reps = list(processed_reps)
         ensure_rep_columns(rpr_date, all_new_reps)
         ensure_rep_columns(cost_date, all_new_reps)
         ensure_rep_columns(pc_date, all_new_reps)
-        ensure_rep_columns(rpr_month, all_new_reps)
-        ensure_rep_columns(cost_month, all_new_reps)
-        ensure_rep_columns(pc_month, all_new_reps)
 
         # Apply date arrays
         add_date_row(rpr_date,  date_label, new_rpr_date)
@@ -271,46 +292,10 @@ def update(excel_path):
                 pc_row_vals[rep] = r4(rpr_v / abs(cost_v))
         add_date_row(pc_date, date_label, pc_row_vals)
 
-        # Apply month arrays
-        month_rpr_by_m  = {}
-        month_cost_by_m = {}
-        month_pc_by_m   = {}
-        for rep, (m, val) in new_rpr_month.items():
-            month_rpr_by_m.setdefault(m, {})[rep] = val
-        for rep, (m, val) in new_cost_month.items():
-            month_cost_by_m.setdefault(m, {})[rep] = val
-        for rep, (m, val) in new_pc_month.items():
-            month_pc_by_m.setdefault(m, {})[rep] = val
-
-        for month_num, rep_vals in month_rpr_by_m.items():
-            target = next((r for r in rpr_month if r["month"] == month_num), None)
-            if target is None:
-                new_row = {k: None for k in rpr_month[-1].keys()}
-                new_row["month"] = month_num
-                rpr_month.append(new_row)
-                target = rpr_month[-1]
-            for rep, val in rep_vals.items():
-                target[rep] = val
-
-        for month_num, rep_vals in month_cost_by_m.items():
-            target = next((r for r in cost_month if r["month"] == month_num), None)
-            if target is None:
-                new_row = {k: None for k in cost_month[-1].keys()}
-                new_row["month"] = month_num
-                cost_month.append(new_row)
-                target = cost_month[-1]
-            for rep, val in rep_vals.items():
-                target[rep] = val
-
-        for month_num, rep_vals in month_pc_by_m.items():
-            target = next((r for r in pc_month if r["month"] == month_num), None)
-            if target is None:
-                new_row = {k: None for k in pc_month[-1].keys()}
-                new_row["month"] = month_num
-                pc_month.append(new_row)
-                target = pc_month[-1]
-            for rep, val in rep_vals.items():
-                target[rep] = val
+        # Regenerate the tenure-month arrays from the freshly-updated date arrays.
+        # This keeps MONTH_* perfectly in sync with DATE_* every run and prevents
+        # the index-skip / shifted / extra-point drift the old approach caused.
+        rebuild_month_arrays(data, universe)
 
         print(f"  OK {universe} {date_label} written to all arrays")
 
