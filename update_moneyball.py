@@ -39,22 +39,22 @@ def month_label(dt):
         return dt.strftime("%b-%y")
     return str(dt)
 
-def get_last_val(arr, rep):
-    """Get the last non-null value for a rep in a date/month array."""
+def get_last_val(arr, rep, exclude_date=None):
+    """Get the last non-null value for a rep in a date/month array.
+
+    When exclude_date is given, rows whose "date" equals it are skipped. This
+    makes re-running an already-written month idempotent: the "previous"
+    cumulative is read from the prior month, not from the row being overwritten
+    in place (which would double-count the increment).
+    """
     val = None
     for row in arr:
+        if exclude_date is not None and row.get("date") == exclude_date:
+            continue
         v = row.get(rep)
         if v is not None:
             val = v
     return val
-
-def get_last_month(arr, rep):
-    """Get the last month number where a rep has data in a month array."""
-    last = -1
-    for row in arr:
-        if row.get(rep) is not None:
-            last = row["month"]
-    return last
 
 def ensure_rep_columns(arr, reps):
     """Add null columns for new reps to all existing rows."""
@@ -205,11 +205,8 @@ def update(excel_path):
         print(f"\n{universe} — processing {date_label} ({len(excel_rows)} reps)")
 
         rpr_date  = data[rpr_key_date]
-        rpr_month = data[rpr_key_month]
         cost_date  = data[cost_key_date]
-        cost_month = data[cost_key_month]
         pc_date   = data[pc_key_date]
-        pc_month  = data[pc_key_month]
         active_list = data[active_key]
         reps_list   = data[reps_key]
         known_reps  = set(data.get(known_key, []))
@@ -217,7 +214,6 @@ def update(excel_path):
 
         new_rpr_date  = {}
         new_cost_date  = {}
-        new_pc_date   = {}
 
         processed_reps = set()
 
@@ -234,17 +230,16 @@ def update(excel_path):
             monthly_rpr = elc_rev - comm - assoc - payroll_tax - salary - lb
             monthly_cost = (salary + comm) * (1 + TAX_RATE)  # direct cost (positive)
 
-            prev_rpr  = get_last_val(rpr_date, rep) or 0.0
-            prev_cost = get_last_val(cost_date, rep) or 0.0  # negative cumulative
+            prev_rpr  = get_last_val(rpr_date, rep, exclude_date=date_label) or 0.0
+            prev_cost = get_last_val(cost_date, rep, exclude_date=date_label) or 0.0  # negative cumulative
 
             cum_rpr  = r2(prev_rpr + monthly_rpr)
             cum_cost = r2(prev_cost - monthly_cost)  # grows more negative
 
-            pc_ratio = r4(cum_rpr / abs(cum_cost)) if cum_cost != 0 else None
-
             new_rpr_date[rep]  = cum_rpr
             new_cost_date[rep] = cum_cost
-            new_pc_date[rep]   = pc_ratio
+            # PC is recomputed authoritatively from RPR/CCOST after the date rows
+            # are written (see pc_row_vals below); no need to stash it here.
 
             # (Month/tenure arrays are regenerated from the date arrays below,
             #  after all date rows are written — see rebuild_month_arrays.)
@@ -265,12 +260,12 @@ def update(excel_path):
         for rep, conf in leave_conf.items():
             if rep in processed_reps:
                 continue
-            prev_rpr = get_last_val(rpr_date, rep)
-            prev_cost = get_last_val(cost_date, rep)
+            prev_rpr = get_last_val(rpr_date, rep, exclude_date=date_label)
+            prev_cost = get_last_val(cost_date, rep, exclude_date=date_label)
             if prev_rpr is not None:
                 new_rpr_date[rep]  = prev_rpr   # flat
                 new_cost_date[rep] = prev_cost  # flat (no cost during leave)
-                new_pc_date[rep]   = r4(prev_rpr / abs(prev_cost)) if prev_cost else None
+                # PC recomputed from RPR/CCOST below (pc_row_vals)
                 # Month arrays: leave period doesn't advance tenure month
                 print(f"  ~ {rep} on leave — held flat at {prev_rpr}")
 
