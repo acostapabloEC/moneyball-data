@@ -202,6 +202,13 @@ def update(excel_path):
             continue
 
         date_label = excel_rows[0]["month_label"]
+        # All rows in one sheet must belong to the same month, and the label must
+        # be a valid Mon-YY — otherwise add_date_row would append a malformed/orphan row.
+        labels = {r["month_label"] for r in excel_rows}
+        if len(labels) != 1:
+            raise ValueError(f"{universe}: Excel spans multiple months {sorted(labels)}; expected one.")
+        if not re.match(r"^[A-Z][a-z]{2}-\d{2}$", date_label):
+            raise ValueError(f"{universe}: bad month label {date_label!r}; expected 'Mon-YY' (e.g. Apr-26).")
         print(f"\n{universe} — processing {date_label} ({len(excel_rows)} reps)")
 
         rpr_date  = data[rpr_key_date]
