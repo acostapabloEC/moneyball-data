@@ -108,7 +108,6 @@
   ],
   "BDA_ACTIVE": [
     "Aaron Acosta",
-    "Anthony Patruno",
     "John Blackwell",
     "Kevin Bradel",
     "Linda Cancelli",
@@ -117,12 +116,12 @@
     "Quentin Green",
     "Shannon Barranger",
     "Spring Washington",
-    "Steven Gambrel",
     "William Shannon"
   ],
   "BDA_INACTIVE": [
     "Alex Young",
     "Alexander Wolcott",
+    "Anthony Patruno",
     "Ariane Quero Dos Santos",
     "Ashley Mieldon",
     "Bonetta Crews",
@@ -152,7 +151,8 @@
     "Philip Saglembeni",
     "Rachel Shover",
     "Sarah Stanhope",
-    "Sean Miller"
+    "Sean Miller",
+    "Steven Gambrel"
   ],
   "SBC_ACTIVE": [
     "Brett Olson",
