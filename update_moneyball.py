@@ -24,7 +24,26 @@ LEAVE_CONFIG = {
     "SBC": {}
 }
 
+# Ongoing monthly reimbursements that offset a rep's salary cost.
+# Applied every month from start_month onward (inclusive) until removed here.
+# Format: {"BDA"/"SBC": {rep: {"start_month": "Mon-YY", "amount": float}}}
+SALARY_CREDITS = {
+    "BDA": {
+        # EAS reimburses ECP $2,750/mo for Buscio's EAS Buyer Consulting
+        # services — per Pablo, 2026-09-29.
+        "Michael Buscio": {"start_month": "Apr-26", "amount": 2750.0},
+    },
+    "SBC": {}
+}
+
 TAX_RATE = 0.12  # Payroll tax: (Salary + Comm) * 12%
+
+MONTHS_ORDER = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+def month_key(label):
+    """'Mon-YY' -> sortable (year, month_index) tuple."""
+    mon, yr = label.split("-")
+    return (int(yr), MONTHS_ORDER.index(mon))
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def r2(n):
@@ -40,16 +59,25 @@ def month_label(dt):
     return str(dt)
 
 def get_last_val(arr, rep, exclude_date=None):
-    """Get the last non-null value for a rep in a date/month array.
+    """Get the last non-null value for a rep, considering only rows strictly
+    before exclude_date (chronologically) when it's given.
 
-    When exclude_date is given, rows whose "date" equals it are skipped. This
-    makes re-running an already-written month idempotent: the "previous"
-    cumulative is read from the prior month, not from the row being overwritten
-    in place (which would double-count the increment).
+    This makes re-running ANY already-written month idempotent — not just the
+    most recent one. Excluding rows by date equality alone (the prior
+    behavior) breaks the moment a LATER month already exists in the array:
+    it would still be unexcluded and, being last in array order, would get
+    picked up as "previous" — silently reading a future month's cumulative
+    into a historical recompute. Comparing by month_key instead of equality
+    excludes exclude_date's row AND everything after it, so "previous" always
+    means the true prior month regardless of what's already been appended.
     """
     val = None
+    limit = month_key(exclude_date) if exclude_date is not None else None
     for row in arr:
-        if exclude_date is not None and row.get("date") == exclude_date:
+        date = row.get("date")
+        if date is None:
+            continue
+        if limit is not None and month_key(date) >= limit:
             continue
         v = row.get(rep)
         if v is not None:
@@ -217,7 +245,8 @@ def update(excel_path):
         active_list = data[active_key]
         reps_list   = data[reps_key]
         known_reps  = set(data.get(known_key, []))
-        leave_conf  = LEAVE_CONFIG.get(universe, {})
+        leave_conf   = LEAVE_CONFIG.get(universe, {})
+        credit_conf  = SALARY_CREDITS.get(universe, {})
 
         new_rpr_date  = {}
         new_cost_date  = {}
@@ -231,6 +260,10 @@ def update(excel_path):
             elc_rev = row["elc_rev"]
             assoc   = row["assoc"]
             lb      = row["lead_bonus"]
+
+            credit = credit_conf.get(rep)
+            if credit and month_key(date_label) >= month_key(credit["start_month"]):
+                salary = max(0.0, salary - credit["amount"])
 
             # P&L formula
             payroll_tax = (salary + comm) * TAX_RATE
