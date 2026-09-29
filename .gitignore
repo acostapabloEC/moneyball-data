@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Raw monthly source exports (per-rep salary/commission data) — local only
+*Moneyball*.xlsx
